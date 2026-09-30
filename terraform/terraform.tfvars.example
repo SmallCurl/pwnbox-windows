@@ -1,0 +1,10 @@
+# Prefer ./scripts/deploy.sh, which writes terraform.tfvars for you.
+# Token stays in the environment: export HCLOUD_TOKEN='...'
+
+ssh_public_key   = "ssh-ed25519 AAAA... comment"
+stud_count       = 10
+work_count       = 12
+location         = "fsn1"
+server_type      = "cx52"
+linux_boot       = "ubuntu"
+windows_version  = "11"

@@ -1,0 +1,146 @@
+#cloud-config
+hostname: ${hostname}
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+  - ufw
+
+write_files:
+  - path: /root/dockur.env
+    permissions: "0600"
+    owner: root:root
+    content: |
+      TEAM_SLUG=${slug}
+      PLAYER1_PASSWORD=${passwords[0]}
+      PLAYER2_PASSWORD=${passwords[1]}
+      PLAYER3_PASSWORD=${passwords[2]}
+
+  - path: /usr/local/sbin/gctf-dockur-boot.sh
+    permissions: "0700"
+    owner: root:root
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      if ! command -v docker >/dev/null 2>&1; then
+        curl -fsSL https://get.docker.com | sh
+      fi
+      systemctl enable --now docker
+      modprobe tun || true
+      if [[ ! -c /dev/kvm ]]; then
+        echo "No /dev/kvm. This server type does not expose nested virtualization." >&2
+        exit 1
+      fi
+      if ! ufw status | grep -q "Status: active"; then
+        ufw default deny incoming
+        ufw default allow outgoing
+        ufw allow 22/tcp
+        ufw allow 3389/tcp
+        ufw allow 3389/udp
+        ufw allow 8006:8008/tcp
+        ufw --force enable
+      fi
+      mkdir -p /opt/team-share
+      chmod 1777 /opt/team-share
+
+      linux_image='${linux_image}'
+      windows_image='${windows_image}'
+      pull() {
+        local image="$1" ok=0
+        for _attempt in 1 2 3 4 5; do
+          if docker pull "$image"; then
+            ok=1
+            break
+          fi
+          sleep 15
+        done
+        if [[ "$ok" -ne 1 ]]; then
+          echo "docker pull failed: $image" >&2
+          exit 1
+        fi
+      }
+      pull "$linux_image"
+      pull "$windows_image"
+
+      pw() {
+        awk -F= -v key="$1" '$1 == key {print substr($0, index($0, "=") + 1)}' /root/dockur.env
+      }
+      running() {
+        docker ps -a --format '{{.Names}}' | grep -qx "$1"
+      }
+
+      if running player1-linux; then
+        docker start player1-linux
+      else
+        docker run -d \
+          --name player1-linux \
+          --hostname player1-linux \
+          --restart unless-stopped \
+          --stop-timeout 120 \
+          --device=/dev/kvm \
+          --device=/dev/net/tun \
+          --cap-add NET_ADMIN \
+          -p 8006:8006 \
+          -e BOOT='${linux_boot}' \
+          -e RAM_SIZE='${linux_ram}' \
+          -e CPU_CORES='${linux_cpus}' \
+          -e DISK_SIZE='${linux_disk}' \
+          -e DISK_FMT=qcow2 \
+          -e RAM_CHECK=N \
+          -v player1-linux-storage:/storage \
+          -v /opt/team-share:/shared \
+          "$linux_image"
+      fi
+
+      if running player2-linux; then
+        docker start player2-linux
+      else
+        docker run -d \
+          --name player2-linux \
+          --hostname player2-linux \
+          --restart unless-stopped \
+          --stop-timeout 120 \
+          --device=/dev/kvm \
+          --device=/dev/net/tun \
+          --cap-add NET_ADMIN \
+          -p 8007:8006 \
+          -e BOOT='${linux_boot}' \
+          -e RAM_SIZE='${linux_ram}' \
+          -e CPU_CORES='${linux_cpus}' \
+          -e DISK_SIZE='${linux_disk}' \
+          -e DISK_FMT=qcow2 \
+          -e RAM_CHECK=N \
+          -v player2-linux-storage:/storage \
+          -v /opt/team-share:/shared \
+          "$linux_image"
+      fi
+
+      if running player3-windows; then
+        docker start player3-windows
+      else
+        docker run -d \
+          --name player3-windows \
+          --hostname player3-windows \
+          --restart unless-stopped \
+          --stop-timeout 120 \
+          --device=/dev/kvm \
+          --device=/dev/net/tun \
+          --cap-add NET_ADMIN \
+          -p 8008:8006 \
+          -p 3389:3389/tcp \
+          -p 3389:3389/udp \
+          -e VERSION='${windows_version}' \
+          -e USERNAME=player3 \
+          -e PASSWORD="$(pw PLAYER3_PASSWORD)" \
+          -e RAM_SIZE='${windows_ram}' \
+          -e CPU_CORES='${windows_cpus}' \
+          -e DISK_SIZE='${windows_disk}' \
+          -e DISK_FMT=qcow2 \
+          -e RAM_CHECK=N \
+          -v player3-windows-storage:/storage \
+          -v /opt/team-share:/shared \
+          "$windows_image"
+      fi
+
+runcmd:
+  - [bash, -lc, "/usr/local/sbin/gctf-dockur-boot.sh > /var/log/gctf-dockur-boot.log 2>&1"]
